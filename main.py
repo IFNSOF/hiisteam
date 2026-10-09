@@ -19,7 +19,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8916803464:AAGKBpOm2GYrEtbuHym4H4h0Tq_IGyo58
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://neondb_owner:npg_7UJskMrjKNi6@ep-fancy-mud-b5w296rq-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
 ADMIN_ID = 8786951363                      # <-- ТВОЙ TELEGRAM ID
 CHANNEL = "@hissbyte"                 # канал для обязательной подписки (@username или -100...)
-CHANNEL_URL = "https://t.me/+tNrWwB8DXfY3OTQ5l" # ссылка на этот канал
+CHANNEL_URL = "https://t.me/hissbyte" # ссылка на этот канал
+CHECK_CHANNEL = -1004399299486           # <-- ID канала, где игроки собирают заявки (бот там админ)
 PRICE = Decimal("0.2")                    # цена за 1 заявку, $
 # ===============================================
 
@@ -153,7 +154,36 @@ async def ok(c: CallbackQuery, state: FSMContext):
     uid = int(c.data.split(":")[1])
     await state.set_state(AdminState.link)
     await state.update_data(uid=uid)
-    await c.message.answer(f"Отправьте ссылку-приглашение (с заявками на вступление) для {uid}:")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🤖 Создать ссылку автоматически", callback_data=f"auto:{uid}")
+    ]])
+    await c.message.answer(
+        f"Пришлите ссылку (с заявками на вступление) для {uid} "
+        f"или нажмите кнопку — бот сам создаст уникальную:", reply_markup=kb)
+    await c.answer()
+
+
+async def approve(uid: int, link: str):
+    await pool.execute("UPDATE users SET status='approved', link=$2 WHERE id=$1", uid, link)
+    await bot.send_message(
+        uid, f"✅ <b>Доступ открыт!</b>\n\nВаша ссылка:\n{link}",
+        parse_mode="HTML", reply_markup=menu_kb, disable_web_page_preview=True,
+    )
+
+
+@dp.callback_query(F.data.startswith("auto:"))
+async def auto_link(c: CallbackQuery, state: FSMContext):
+    if c.from_user.id != ADMIN_ID:
+        return await c.answer()
+    uid = int(c.data.split(":")[1])
+    try:
+        l = await bot.create_chat_invite_link(
+            CHECK_CHANNEL, name=f"user_{uid}", creates_join_request=True)
+    except Exception as e:
+        return await c.message.answer(f"Не удалось создать ссылку: {e}\nБот должен быть админом канала.")
+    await approve(uid, l.invite_link)
+    await state.clear()
+    await c.message.answer(f"Готово, ссылка выдана:\n{l.invite_link}")
     await c.answer()
 
 
@@ -172,12 +202,11 @@ async def no(c: CallbackQuery, state: FSMContext):
 async def got_link(m: Message, state: FSMContext):
     uid = (await state.get_data())["uid"]
     link = m.text.strip()
-    await pool.execute("UPDATE users SET status='approved', link=$2 WHERE id=$1", uid, link)
+    used = await pool.fetchval("SELECT id FROM users WHERE link=$1 AND id<>$2", link, uid)
+    if used:
+        return await m.answer("⚠️ Эта ссылка уже выдана другому игроку. У каждого должна быть своя. Пришлите другую.")
     await state.clear()
-    await bot.send_message(
-        uid, f"✅ <b>Доступ открыт!</b>\n\nВаша ссылка:\n{link}",
-        parse_mode="HTML", reply_markup=menu_kb, disable_web_page_preview=True,
-    )
+    await approve(uid, link)
     await m.answer("Готово, доступ выдан.")
 
 
